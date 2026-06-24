@@ -1,0 +1,56 @@
+team_name: "Solo Warrior"
+
+primary_contact:
+  name: "Trisha K"
+  email: "trishchai08@gmail.com"
+  phone: "+91-9108168497"
+
+team_members:
+  - name: "Trisha K"
+    email: "trishchai08@gmail.com"
+    role: "Solo"
+
+github_repo: "https://github.com/yourcoder0/redrob-ranker"
+sandbox_link: "https://huggingface.co/spaces/trisha080204/redrob-ranker"
+
+reproduce_command: "python rank.py --candidates ./candidates.jsonl --out ./submission.csv"
+
+compute:
+  platform: "CPU"
+  cpu_cores: 4
+  ram_gb: 16
+  python_version: "3.12"
+  os: "Linux"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: false
+  pre_computation_time_minutes: 0
+
+ai_tools_used:
+  - "Claude"
+
+ai_usage_summary: |
+  Used Claude to discuss scoring architecture, identify JD disqualifiers, and review
+  scoring logic. All scoring components, weights, and engineering decisions made by me.
+  No candidate data was fed to any LLM. The ranker is pure Python stdlib, no external APIs.
+
+methodology_summary: |
+  Rule-based ranker with explicit reasoning capture. Five scoring components
+  (core skills 35pts, career trajectory 25pts, experience years 10pts,
+  location 10pts, education 5pts) combined with a multiplicative behavioral-signal
+  modifier (0.3–1.0). Skills use a trust multiplier (proficiency × endorsements ×
+  duration_months) to defeat keyword stuffers. Career component reads description
+  text for shipped-system evidence. Four skill clusters (embeddings, vector DB,
+  ranking/eval, Python) each gate 5 pts to ensure genuine domain coverage.
+  Honeypot detection: impossible tenure vs founding date, expert skills with 0
+  duration months, wildly inconsistent YOE vs career span.
+  Behavioral modifier penalizes inactive profiles (>6mo), low recruiter response
+  rate (<10% → 0.5×), long notice periods (>90d), and low interview completion.
+  Runtime: ~40 sec for 100K candidates on CPU.
+
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true
