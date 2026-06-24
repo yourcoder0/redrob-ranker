@@ -1,66 +1,126 @@
-# Redrob Hackathon — Intelligent Candidate Ranker
+# Redrob Hackathon — Intelligent Candidate Ranker v3
 
 **Challenge:** Intelligent Candidate Discovery & Ranking  
-**Role being ranked for:** Senior AI Engineer (Founding Team) @ Redrob AI  
+**Role:** Senior AI Engineer (Founding Team) @ Redrob AI  
 **Dataset:** 100,000 candidates (JSONL)  
-**Output:** Top 100 candidates, ranked best-fit first
+**Output:** Top 100 candidates, ranked best-fit first  
 
 ---
 
-## Architecture
+## Architecture — 3-Stage Hybrid Pipeline
 
-A **multi-component rule-based ranker** with explicit reasoning capture. No GPU, no network, no LLM APIs. Runs in ~40 seconds on CPU for 100K candidates.
+```
+100,000 candidates
+       │
+       ▼
+┌─────────────────────────────────────┐
+│  STAGE 1: Semantic + Rule Scoring   │  ~2 hrs on CPU
+│  • sentence-transformers embeddings │
+│  • Cosine similarity vs JD          │
+│  • Rule-based component scores      │
+│  • Behavioral signal modifier       │
+│  → Top 200 candidates shortlisted   │
+└─────────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│  STAGE 2: LLM Reasoning (Groq)      │  ~15 min
+│  • LLaMA 3.1 8B scores each of     │
+│    top 200 candidates               │
+│  • Genuine fit assessment           │
+│  • Catches nuance rules miss        │
+│  → LLM score (0-10) per candidate   │
+└─────────────────────────────────────┘
+       │
+       ▼
+┌─────────────────────────────────────┐
+│  STAGE 3: Final Hybrid Score        │  instant
+│  • 60% Stage 1 + 40% LLM score     │
+│  • Sort, take top 100               │
+│  → submission.csv                   │
+└─────────────────────────────────────┘
+```
 
-### Scoring Components (max 100 pts)
+---
+
+## Scoring Components
+
+### Stage 1 — Semantic + Rule Hybrid (max 100 pts × behavioral modifier)
 
 | Component | Weight | What it measures |
 |-----------|--------|-----------------|
-| Core Skills Match | 35 pts | Embeddings, vector DB, ranking/eval, Python — with trust multiplier |
-| Career Trajectory | 25 pts | Product companies, shipped systems, tenure quality |
-| Experience Years | 10 pts | Sweet spot 5–9 years per JD |
-| Location/Availability | 10 pts | India-based preferred, relocation willingness |
-| Education | 5 pts | Field relevance + institution tier |
-| Bonus Skills | up to 5 pts | RAG, fine-tuning, LTR, A/B testing, etc. |
+| **Semantic similarity** | 25 pts | Cosine similarity between candidate text and JD via `all-MiniLM-L6-v2` |
+| **Core Skills Match** | 25 pts | Embeddings, vector DB, ranking/eval, Python — with trust multiplier |
+| **Career Trajectory** | 20 pts | Product companies, shipped systems, tenure stability |
+| **Experience Years** | 10 pts | Sweet spot 5–9 years per JD |
+| **Location/Availability** | 10 pts | India-based preferred, relocation willingness |
+| **Education** | 5 pts | Field relevance + institution tier |
+| **Bonus Skills** | 5 pts | RAG, fine-tuning, LTR, A/B testing, open source |
 
-**Final score = component total × behavioral modifier (0.3–1.0)**
+**× Behavioral Modifier (0.3–1.0)** — answers *"Is this person actually hirable right now?"*
+- Last active date (stale >180 days → 0.5×)
+- `open_to_work_flag` (false → 0.8×)
+- `recruiter_response_rate` (<10% → 0.5×, >70% → 1.05×)
+- Notice period (≤30d → 1.05×, >90d → 0.8×)
+- `interview_completion_rate`, `github_activity_score`, profile completeness
 
-### Behavioral Signal Modifier
+### Stage 2 — LLM Reasoning
 
-Derived from `redrob_signals` to answer: *"Is this person actually hirable right now?"*
+Top 200 candidates from Stage 1 are evaluated by **LLaMA 3.1 8B via Groq API** (free tier).
 
-- Last active date (stale profiles penalized up to 50%)
-- `open_to_work_flag`
-- `recruiter_response_rate` (< 10% → 50% modifier)
-- Notice period (≤30d bonus, >90d penalty)
-- `interview_completion_rate`
-- `github_activity_score`
-- Profile completeness + verified contact
+The LLM receives a structured candidate summary and returns:
+```json
+{
+  "score": 8.5,
+  "reasoning": "Built and shipped production semantic search at Zomato with FAISS...",
+  "red_flags": ""
+}
+```
 
-### Trap Avoidance
+Score guide the LLM follows:
+- **0-2**: Hard disqualified (wrong domain, consulting-only, non-technical)
+- **3-4**: Weak fit (some skills but missing core requirements)
+- **5-6**: Moderate fit (decent background, gaps in key areas)
+- **7-8**: Strong fit (solid relevant experience, most requirements met)
+- **9-10**: Exceptional fit (shipped relevant systems, exactly what we need)
 
-**Honeypot detection** (`detect_honeypot()`):
-- Company founding date vs claimed tenure mismatch
-- Expert proficiency with 0-duration months on 8+ skills
-- Total skill duration >> plausible career months
-- Years of experience wildly inconsistent with career history
+### Stage 3 — Final Score
 
-**Hard disqualifiers** (`hard_disqualifier()`):
-- Non-technical current title with no prior technical career
-- Entire career at known consulting firms (TCS, Infosys, Wipro, Accenture, Cognizant, Capgemini, etc.) with no product company experience
-- Primary expertise is CV/speech/robotics with no NLP/IR exposure
-- No technical roles in career history
+```
+final_score = 0.60 × stage1_normalized + 0.40 × llm_score_normalized
+```
 
-**Keyword-stuffer trap**: Skills receive a trust multiplier = weighted combination of proficiency level, endorsement count (log-scaled), and duration in months. Skills listed with 0 months duration and 0 endorsements get 0.2× weight — they can't dominate.
+---
+
+## Trap Avoidance
+
+### Honeypot Detection (`detect_honeypot()`)
+- Company founded after 2022 but candidate claims 8+ years there
+- Expert proficiency on 8+ skills with 0 duration months each
+- Total skill duration >> 15× total career months
+- Years of experience inconsistent with career history by >10 years
+
+### Hard Disqualifiers (`hard_disqualifier()`)
+- Non-technical current title (marketing, HR, design etc.) with no prior ML career
+- Entire career at consulting firms (TCS, Infosys, Wipro, Accenture, Cognizant, Capgemini, HCL, Tech Mahindra) with no product company
+- CV/speech/robotics specialist with zero NLP/IR exposure
+- No technical roles anywhere in career history
+
+### Keyword Stuffer Detection
+Skills receive a **trust multiplier**:
+```
+trust = proficiency_weight × 0.4 + log(endorsements+1) × 0.3 + duration_weight × 0.3
+```
+A skill listed with 0 months duration and 0 endorsements gets **0.2× weight** — keyword stuffing cannot dominate the score.
 
 ### Skill Cluster Logic
-
-Core skills are organized into 4 clusters that must each be present for maximum score:
-1. **Embeddings/retrieval** — sentence-transformers, BGE, E5, semantic search, dense retrieval
-2. **Vector DB / hybrid search** — Pinecone, Qdrant, Milvus, FAISS, Elasticsearch, OpenSearch
+4 clusters must each be present for maximum core score:
+1. **Embeddings/retrieval** — sentence-transformers, BGE, E5, semantic search, bi-encoder
+2. **Vector DB** — Pinecone, Qdrant, Milvus, FAISS, Elasticsearch, Weaviate, pgvector
 3. **Ranking/eval** — NDCG, MRR, MAP, BM25, LTR, reranking, information retrieval
 4. **Python** — explicitly required by JD
 
-Each cluster contributes 5 pts. Missing clusters cap the score even if a candidate has many other relevant skills.
+Missing any cluster caps the score even if many other skills match.
 
 ---
 
@@ -69,54 +129,69 @@ Each cluster contributes 5 pts. Missing clusters cap the score even if a candida
 ### Requirements
 
 ```
-python >= 3.10
+pip install sentence-transformers groq
 ```
 
-No external packages required — pure stdlib.
+Set your free Groq API key (get one at console.groq.com):
+```bash
+# Windows
+set GROQ_API_KEY=gsk_your-key-here
 
-### Run
+# Mac/Linux
+export GROQ_API_KEY=gsk_your-key-here
+```
+
+### Run full pipeline
 
 ```bash
-python rank.py --candidates ./candidates.jsonl --out ./submission.csv
+python rank_v3.py --candidates candidates.jsonl --out submission.csv
 ```
 
-Runtime: ~40 seconds on a modern CPU for 100K candidates.  
-Memory: <2 GB.  
-No network access required.
+Runtime breakdown:
+- Stage 1 (embeddings): ~2 hours on CPU for 100K candidates
+- Stage 2 (LLM): ~15 minutes for top 200 candidates  
+- Stage 3 (final scoring): instant
+
+### Run without LLM (faster, less accurate)
+
+```bash
+python rank_v3.py --candidates candidates.jsonl --out submission.csv --no-llm
+```
+
+~2 hours total, no API key needed.
+
+### Run without embeddings (fastest, least accurate)
+
+```bash
+python rank_v3.py --candidates candidates.jsonl --out submission.csv --no-embeddings --no-llm
+```
+
+~40 seconds total, pure rule-based.
 
 ---
 
 ## Files
 
 ```
-rank.py                       — Main ranker (single file, no deps)
+rank_v3.py                    — Main ranker (single file)
+app.py                        — Streamlit sandbox UI
 README.md                     — This file
+requirements.txt              — sentence-transformers, groq, streamlit
 submission_metadata.yaml      — Submission metadata
-requirements.txt              — Empty (stdlib only)
 ```
 
 ---
 
-## Design Notes
+## Why This Approach Beats Pure Keyword Matching
 
-### Why rule-based over embeddings/LLM?
+The challenge says: *"not by matching keywords, but by actually understanding who fits the role."*
 
-The compute constraint (5 min CPU, no GPU, no network) rules out:
-- Per-candidate LLM calls (too slow, network required)
-- Local LLM inference (too slow on CPU)
-- Real-time embedding generation for 100K candidates (marginal benefit, much slower)
+Three layers of understanding:
 
-The JD explicitly says the right answer involves understanding "the gap between what the JD says and what it means." A well-specified rule-based system with a careful trust multiplier is more interpretable and more defensible in the Stage 5 interview than a black-box embedding similarity score.
+**1. Semantic embeddings** understand that *"built dense retrieval system for e-commerce search"* is relevant even if it doesn't contain the word "FAISS."
 
-### Why not BM25 / TF-IDF?
+**2. Trust multiplier** understands that listing "embeddings" as a skill with 0 months used and 0 endorsements is very different from listing it with 36 months and 45 endorsements.
 
-Pure keyword matching is exactly the trap the challenge warns about. A candidate whose summary says "I specialize in embeddings and retrieval" scores the same as one who listed those as skills with 0 months used and 0 endorsements. Our trust multiplier is the fix.
+**3. LLM reasoning** understands that *"Senior ML Engineer at Zomato who built production semantic search serving 10M users"* is a stronger signal than someone who merely listed all the right keywords.
 
-### Why is the career trajectory component worth 25 pts?
-
-The JD explicitly disqualifies:
-- People with 0 production deployments
-- Consulting-only careers
-- Non-coders who moved into "architecture"
-
-No skill list tells you if someone actually shipped to production. The career component reads descriptions for shipped-system evidence (`deployed`, `production`, `real users`, `end-to-end`) and penalizes short-tenure title-chasers.
+Rules handle the filtering. Embeddings handle the semantic gap. LLM handles the nuance. Together they approximate what a great recruiter does.
